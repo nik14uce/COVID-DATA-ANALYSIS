@@ -1,0 +1,513 @@
+---
+title: "COVID ANALYSIS"
+author: "Nikhil Gupta"
+date: "9/17/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **INTRODUCTION** : 
+
+The purpose of this project is to analyse the data related to covid-19 cases as well as deaths, collected at the country level (United States) and The global level and produce a reproducible report in R.
+
+### The questions of interest are :
+
+  * Analyzing and Plotting the covid -19 cases and deaths till date for the entire US nation.
+  * Analyzing and Plotting the covid -19 cases and deaths till date for a particular state of interest (New York)
+  * Analysing and Plotting the daily new cases/deaths curve for the entire US nation
+  * Analysing and Plotting the daily new cases/deaths curve for a particular state of interest (New York)
+  * List of top 10 worst performing US states having highest death rates ( deaths per thousand population)
+  * List of top 10 best performing US states having lowest death rates ( deaths per thousand population)
+  * Creating a linear Model to predict probable death rates(deaths/thousand people) for perspective case rates(cases/thousand people)
+
+
+
+
+### Data Source :
+
+The source of our data is **[Johns Hopkins University]https://github.com/CSSEGISandData/COVID-19 github sites.**
+
+This is the data repository for the 2019 Novel Coronavirus Visual Dashboard operated by the Johns Hopkins University Center for Systems Science and Engineering **(JHU CSSE)**. Also, Supported by ESRI Living Atlas Team and the Johns Hopkins University Applied Physics Lab (JHU APL).
+
+The data contains **multiple .csv files** containing daily covid-19 cases and deaths for various **nations of the world** as well as the detailed (county level) data for **United States of America**.
+
+
+#### Importing relevant *libraries*
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+```
+
+#### Importing the data for Analysis
+
+``` {r}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+file_names <- c("confirmed_global.csv",
+                "deaths_global.csv",
+                "confirmed_US.csv",
+                "deaths_US.csv")
+urls <- str_c(url_in,file_names) 
+
+global_cases <- read_csv(urls[1], show_col_types = FALSE)
+global_deaths <- read_csv(urls[2], show_col_types = FALSE)
+US_cases <- read_csv(urls[3], show_col_types = FALSE)
+US_deaths <- read_csv(urls[4], show_col_types = FALSE)
+
+# The above code imports the data into 4 different csv files.
+```
+
+
+#### Tyding the global data :
+
+* Pivoting the dates columns into rows.
+* Renaming certain attributes to make the tibble more friendly.*
+* Joining the global_cases and global_deaths into **global** using a **full joint**
+
+```{r}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`,
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat,Long))  # removing lat, longs
+
+print(global_cases)
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`,
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+print(global)
+```               
+#### **Cleaning** the data set
+
+* looking at the *summary of the data* to see if there are any problems.
+
+```{r}
+summary(global)
+```
+
+* Several rows have zero cases. hence, removing the rows with zero cases.
+
+```{r}
+global <- global %>% filter(cases > 0)
+```
+
+
+
+#### Tyding the US data :
+
+* Pivoting the dates columns into rows.
+* Removing extra attibutes like latitudes and longitudes.
+* Joining the US_cases and US_deaths into **US** using a **full joint**
+
+```{r}
+#creating dates Vs cases columns.
+
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))        # removing the latitudes and longitudes.
+
+
+#creating dates Vs deaths columns
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to ="deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+# joining the US deathts and cases dataset
+US <- US_cases %>%
+  full_join(US_deaths)  
+print(US)
+```
+
+#### Updating the global dataset to include **population data**
+
+The global dataset does not contain any population data. Hence, to do
+comparitive analysis among different countries, we are adding population data
+to it. Also we are making a new column *combined key* to represent holistic 
+location identity.
+
+```{r}
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+#adding population
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+print(uid)
+
+```
+Adding the population data to the *global* dataset using **left joint.**
+
+```{r}
+
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, #selection in a particular order
+         cases, deaths, Population,
+         Combined_Key)
+print(global)
+```
+
+
+#### ** Data Visualization and Analysis**
+
+Considering the US data set and analysing it for each state.
+
+##### Making a **US_by_state** dataset to have state-wise statistics of covid cases and deaths till date.
+
+```{r}
+#Clubbing all the county data(Admin2) to their respective states
+
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+```
+
+##### Making a **US_totals** dataset to have a complete picture of US's covid cases and deaths at the Nation Level till date.
+
+```{r}
+
+# Clubbing all the US states data to the Federal(US) level.
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+print(US_totals)
+```
+
+#### Plotting the total US's cases and deaths till date.
+
+```{r}
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in United States", y= NULL)
+```
+
+
+
+#### Analysis of the US total cases and deaths Plot :
+The above plot of "Total covid-19 cases and deaths till date in United States" clearly shows that the increase in covid deaths/cases was higher in the starting phase of pandemic and then the graphs have started becoming less steeper with time. The reason behind the same may be a better understanding of the disease, greater preparedness to fight covid with time along with aggressive vaccination drive.
+
+Also , the curves for cases and deaths show a parallel shape with a slight lag in time, clearly suggesting that their is a positive correlation between cases and deaths. Also , the lag justifies the argument that *cases today can be a casuality of tomorrow*.
+
+
+#### Plotting the cases and deaths for a particular state of interest (New York)
+```{r}
+state <- "New York"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+
+```
+
+
+
+#### Analyze the data
+
+Calculating the new cases and deaths being added daily for the entire country as well as for each state. Using the *lag function* to do the same.
+
+```{r}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+```
+
+Plotting the new cases and deaths on graph
+
+```{r}
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+    geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+```
+#### Analysis of the COVID 19 in US-new cases, new deaths curve
+
+As can be seen from the graph, the new cases and new deaths are showing parallel curves.
+Also, both new cases and new deaths have a roughly *sinusoidal shape* suggesting *multiple waves* of
+covid-19 in the nation. The new cases keep rising till a peak and then decrease, representing
+the first wave of covid, followed by similar increase- peak-decrease phase of second wave.
+The multiple waves can be a result of new variants, carelessness of people due to pandemic fatigue etc.
+
+#### Ploting new cases and new deaths for a particular state ( New York)
+
+```{r}
+state <- "New York"
+US_by_state %>% 
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+    geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position="bottom",
+          axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+```
+
+#### Analysis of the COVID 19 new cases, new deaths curve of New York
+
+
+The curve of New york new cases and new deaths are on expectation lines of the data for nation as a whole.
+But the variation in the new deaths is much more in New York. This probably can be due to some *discrepancy or bias* in the data of the new york state. Hence , the visualization suggests further investigation of this data by cross-checking
+it with other data-sets.
+
+#### Best Performing States Vs Worst Performing States
+
+we will now be comparing how different US states performed, by first calculating the cases per thousand population,
+deaths per thousand population and then applying the *slice_max and slice_min* functions.
+This will give us the best performing and worst performing states of US.
+
+
+##### **Best performing 10 states**
+```{r}
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>% 
+  filter(cases > 0, population > 0) 
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10)
+```
+##### **worst performing 10 states**
+
+```{r}
+US_state_totals %>% 
+  slice_max(deaths_per_thou, n = 10)
+```
+
+#### Modeling the data
+
+We will be creating a **linear model** using the **lm() function** which can predict the value of 
+dependent variable(here deaths per thousand) for any potential value of independent variable ( here cases per thousand).
+Thereafter, we will plot it using ggplot.
+
+```{r}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+#best state data
+US_state_totals %>% slice_min(cases_per_thou)
+
+#worst state data
+US_state_totals %>% slice_max(cases_per_thou)
+
+x_grid <- seq(1, 151)
+new_df <- tibble(cases_per_thou = x_grid)
+US_state_totals %>% mutate(pred = predict(mod))
+
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred %>% ggplot() +
+geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+
+```
+
+
+#### **Additional Self Analysis beyond what was done in class.**
+
+**Questions of Interest** :
+
+  *To find the top 5 worst hit nations on the basis of total cases.
+  *To find the top 5 nations with highest death rate (deaths per million population).
+  *To Plot the covid -19 cases and deaths till date for a particular nation
+
+##### Making a covid-19 data set of total cases and deaths till date for each country.
+```{r}
+global_by_country_total <- global %>%
+  group_by(Combined_Key) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Combined_Key,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+print(global_by_country_total)
+```
+
+
+##### worst five hit nations in terms of total cases ? 
+```{r}
+worst_five <- global_by_country_total %>% 
+  slice_max(cases, n = 5)
+print(worst_five)
+```
+
+
+##### Plotting a bar graph to represent the worst 5 hit countries
+```{r}
+barplot(worst_five$cases/1000000,
+main = "Five worst hit countries by COVID-19 (on the basis of total cases)",
+xlab = "country",
+ylab = "Total Covid cases till date (in millions)",
+names.arg = c("US","India","Brazil","Russia","France"),
+col = "darkred",
+horiz = FALSE)
+```
+
+
+
+##### Top 5 countries with highest casualities.
+```{r}
+worst_five_bydeath <- global_by_country_total %>% 
+  slice_max(deaths, n = 5)
+print(worst_five_bydeath)
+```
+
+
+##### Top 5 nations with highest death rate (deaths per million population) ?
+
+```{r}
+highest_death_rate <- global_by_country_total %>% 
+  slice_max(deaths_per_mill, n = 5)
+print(highest_death_rate)
+```
+
+
+
+##### Plot of top 5 countries with highest death rate.
+
+```{r}
+barplot(highest_death_rate$deaths_per_mill,
+main = "Countries with Highest Death Rate due to Covid 19)",
+xlab = "Death Rate (Deaths per million population)",
+ylab = "Countries",
+names.arg = c("Peru","San Marino","Belgium","Bosnia & Herzegoniva","Hungary"),
+col = "Light grey",
+horiz = T )
+```
+
+
+
+##### Plotting the covid-19 cases and deaths for the 2nd worst hit nation in the world that is **"India"**.
+
+*We have already plotted this curve for worst hit nation which is United States.*
+
+```{r}
+global_by_country <- global %>%
+  group_by(Combined_Key, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Combined_Key, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+print(global_by_country)
+```
+
+#### Plotting the trend of cases and deaths for India  till date.
+
+```{r}
+nation <-"India"
+global_by_country %>%
+  filter(cases > 0) %>% filter(Combined_Key == nation) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title =  str_c("COVID19 in ", nation ), y= NULL)
+```
+
+
+#### Conclusion
+
+The Covid-19 analysis leads us to the conclusion that the pandemic started in USA with a very high rate initially,
+but then slowly decreased in rate. This may be due to localised herd immunity and better administrative response to deal with the pandemic.These findings have been inferred by plotting the total cases and deaths for the nation. Similar plot drawn for the state of New York supports these findings. Also the curves of new daily cases and deaths being added also suppliment the same findings as true.
+
+Also, the analysis of the global Covid data leads us to the conclusion that countries with higher population, elder demography, and inadequate health infrastructure are at the top of chart in terms of cases and casualities by covid.
+For Ex. Brazil and India are both very populous nation with a very weak health system and both occupy top 3 positions in terms of covid cases and casuality.
+
+Also, It is a little surprising that how a developed nation like US, with one of the finest health systems, has the highest number of cases and casuality due to covid till date. One possible explanation for this can be due to more accurate reporting system adopted by US as compared to other nations. 
+
+#### Possible Sources of Bias
+
+The possible sources of bias can be at various levels:
+
+Collection of data level : 
+  * due to inadequate/non-representative sample being surveyed.
+  * due to false positive/negative covid- 19 test reports
+  * due to different reporting systems adopted by different states. For ex. some states may be disregarding deaths due to heart-attack post covid recovery as covid deaths
+  * due to human error in reporting the responses of survey
+  
+Analysis of Data level :
+  * Analysis after data visualization can bring in personal bias in some form.
+  * Any bias in the data can be propogated to become bigger through the modeling.  
+
